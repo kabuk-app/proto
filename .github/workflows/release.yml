@@ -3,8 +3,6 @@ name: Release
 # semantic-release creates a tag and a GitHub release only. It never commits back.
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
 
 permissions:
   contents: write
