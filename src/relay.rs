@@ -13,6 +13,18 @@ use std::net::SocketAddr;
 
 /// Most candidates in one message.
 pub const MAX_CANDIDATES: usize = 8;
+/// Prefix of the bytes signed at registration, so a relay can never make a device sign
+/// anything that means something elsewhere.
+pub const REGISTER_CONTEXT: &[u8; 24] = b"kabuk-relay-register-v1\0";
+
+/// The exact bytes a device signs to answer `challenge`.
+pub fn register_message(challenge: &Challenge) -> [u8; 56] {
+	let mut message = [0u8; 56];
+	message[..24].copy_from_slice(REGISTER_CONTEXT);
+	message[24..].copy_from_slice(&challenge.0);
+	message
+}
+
 /// Largest WebRTC signalling blob (SDP or ICE), in bytes. Larger ones must be split by the caller.
 pub const MAX_SIGNAL_LEN: usize = 1024;
 /// Largest ciphertext carried by one [`Message::Forward`], in bytes.
@@ -68,9 +80,9 @@ pub enum Message {
 		/// Random bytes, fresh per registration attempt.
 		challenge: Challenge,
 	},
-	/// Client to relay: Ed25519 signature over the challenge.
+	/// Client to relay: Ed25519 signature over [`register_message`].
 	Proof {
-		/// Signature of the challenge by the registered key.
+		/// Signature of [`register_message`] by the registered key.
 		signature: Signature,
 	},
 	/// Relay to client: registration succeeded.
