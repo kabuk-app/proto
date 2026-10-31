@@ -4,13 +4,27 @@
 //! The payload is opaque here: relays and bridges only read the version and the kind,
 //! never the contents.
 
+use bincode::Options;
 use serde::{Deserialize, Serialize};
+
+pub mod id;
+pub mod relay;
 
 /// Bumped on any incompatible wire change.
 pub const PROTOCOL_VERSION: u16 = 1;
 
 /// Largest encoded envelope, in bytes. Keeps one envelope inside a safe datagram size.
 pub const MAX_ENVELOPE_LEN: usize = 1400;
+
+/// Wire codec: little endian, fixed width integers, trailing bytes rejected.
+pub(crate) fn codec() -> impl bincode::Options {
+	bincode::DefaultOptions::new().with_fixint_encoding()
+}
+
+/// [`codec`] with the allocation cap used when reading untrusted bytes.
+pub(crate) fn codec_limited() -> impl bincode::Options {
+	codec().with_limit(MAX_ENVELOPE_LEN as u64)
+}
 
 /// Which part of the system owns a message kind.
 ///
@@ -61,6 +75,10 @@ pub enum Error {
 	},
 	/// The encoded envelope would exceed [`MAX_ENVELOPE_LEN`].
 	TooLarge,
+	/// A message field exceeds its documented limit.
+	LimitExceeded,
+	/// The kind is not a known message of its range.
+	UnknownKind(u16),
 }
 
 impl std::fmt::Display for Error {
@@ -74,6 +92,8 @@ impl std::fmt::Display for Error {
 				)
 			}
 			Error::TooLarge => write!(f, "envelope too large"),
+			Error::LimitExceeded => write!(f, "message field exceeds its limit"),
+			Error::UnknownKind(k) => write!(f, "unknown message kind {k:#06x}"),
 		}
 	}
 }
@@ -103,7 +123,7 @@ impl Envelope {
 
 	/// Encodes the envelope.
 	pub fn encode(&self) -> Result<Vec<u8>, Error> {
-		let bytes = bincode::serialize(self).map_err(|_| Error::Malformed)?;
+		let bytes = codec().serialize(self).map_err(|_| Error::Malformed)?;
 		if bytes.len() > MAX_ENVELOPE_LEN {
 			return Err(Error::TooLarge);
 		}
@@ -115,7 +135,9 @@ impl Envelope {
 		if bytes.len() > MAX_ENVELOPE_LEN {
 			return Err(Error::TooLarge);
 		}
-		let envelope: Self = bincode::deserialize(bytes).map_err(|_| Error::Malformed)?;
+		let envelope: Self = codec_limited()
+			.deserialize(bytes)
+			.map_err(|_| Error::Malformed)?;
 		if envelope.version != PROTOCOL_VERSION {
 			return Err(Error::VersionMismatch {
 				got: envelope.version,
@@ -170,6 +192,13 @@ mod tests {
 	}
 
 	#[test]
+	fn rejects_trailing_bytes() {
+		let mut bytes = Envelope::new(1, vec![1]).encode().unwrap();
+		bytes.push(0);
+		assert_eq!(Envelope::decode(&bytes), Err(Error::Malformed));
+	}
+
+	#[test]
 	fn max_size_payload_fits() {
 		// 2 + 2 + 8 (length prefix) bytes of overhead.
 		let e = Envelope::new(1, vec![0; MAX_ENVELOPE_LEN - 12]);
@@ -195,6 +224,8 @@ mod tests {
 		assert_eq!(Error::Malformed.to_string(), "malformed envelope");
 		assert_eq!(Error::TooLarge.to_string(), "envelope too large");
 		assert!(Error::VersionMismatch { got: 9 }.to_string().contains('9'));
+		assert!(Error::LimitExceeded.to_string().contains("limit"));
+		assert!(Error::UnknownKind(0x1fff).to_string().contains("0x1fff"));
 		let _: &dyn std::error::Error = &Error::Malformed;
 	}
 }
